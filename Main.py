@@ -1,3 +1,5 @@
+import install_requirements
+
 import uproot
 import pandas as pd
 import math
@@ -17,62 +19,60 @@ from xgboost import XGBRegressor
 from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error, median_absolute_error, r2_score, explained_variance_score
 
+root_file = 'FCCeh_Kut01_Kct01.root'
 
-root_dosyasi = 'FCCeh_Kut01_Kct01.root'
-
-file = uproot.open(root_dosyasi)
+# Open the root file and access the tree
+file = uproot.open(root_file)
 tree = file['Delphes;1']
 
-
 def calculate_muon_momentum(dataframe):
-    # PT, Eta ve Phi değerlerini alın
+    # Get PT, Eta, and Phi values
     muon_PT = dataframe['Muon/Muon.PT']
     muon_Eta = dataframe['Muon/Muon.Eta']
     muon_Phi = dataframe['Muon/Muon.Phi']
-    
-    # Enerji bileşenlerini hesaplayın
+
+    # Calculate energy components
     px = muon_PT * dataframe.apply(lambda row: math.cos(row['Muon/Muon.Phi']), axis=1)
     py = muon_PT * dataframe.apply(lambda row: math.sin(row['Muon/Muon.Phi']), axis=1)
     theta = dataframe.apply(lambda row: 2 * math.atan(math.exp(-row['Muon/Muon.Eta'])), axis=1)
     pz = muon_PT * dataframe.apply(lambda row: math.sinh(row['Muon/Muon.Eta']), axis=1)
-    mass = 0.10566  # Muon kütlesi (GeV)
+    mass = 0.10566  # Muon mass (GeV)
     E = (px**2 + py**2 + pz**2 + mass**2) ** 0.5
-    
-    # Enerjiyi DataFrame'e ekleyin
+
+    # Add energy to the DataFrame
     dataframe['Muon/Muon.Energy'] = E
-    
+
     return dataframe
 
 def calculate_delta_R(eta1, phi1, eta2, phi2):
     d_eta = eta1 - eta2
     d_phi = phi1 - phi2
-    
-    # Phi farkını -pi ile pi aralığına sınırlayın
+
+    # Limit the phi difference to the range -pi to pi
     d_phi = (d_phi + np.pi) % (2 * np.pi) - np.pi
-    
+
     delta_R = np.sqrt(d_eta**2 + d_phi**2)
-    
+
     return delta_R
 
-
 def calculate_environment_mass(dataframe):
-    # Muonun dört momentumunu hesaplayın
+    # Calculate muon momentum
     muon_momentum = calculate_muon_momentum(dataframe)
     muon_PT = muon_momentum['Muon/Muon.PT']
     muon_Eta = muon_momentum['Muon/Muon.Eta']
     muon_Phi = muon_momentum['Muon/Muon.Phi']
     muon_Energy = muon_momentum['Muon/Muon.Energy']
-    
-    # Jetlerin PT, Eta ve Phi değerlerini alın
+
+    # Get PT, Eta, and Phi values of jets
     jet_PT = dataframe['Jet/Jet.PT']
     jet_Eta = dataframe['Jet/Jet.Eta']
     jet_Phi = dataframe['Jet/Jet.Phi']
-    
-    # Muonun yakınındaki jetleri bulun
+
+    # Find jets near the muon
     delta_R = calculate_delta_R(jet_Eta, jet_Phi, muon_Eta, muon_Phi)
     jets_near_muon = dataframe[delta_R < 0.4]
-    
-    # Jetlerin toplam dört momentumunu hesaplayın
+
+    # Calculate total four-momentum of jets
     jet_px = jets_near_muon.apply(lambda row: row['Jet/Jet.PT'] * np.cos(row['Jet/Jet.Phi']), axis=1)
     jet_py = jets_near_muon.apply(lambda row: row['Jet/Jet.PT'] * np.sin(row['Jet/Jet.Phi']), axis=1)
     jet_pz = jets_near_muon.apply(lambda row: row['Jet/Jet.PT'] * np.sinh(row['Jet/Jet.Eta']), axis=1)
@@ -81,24 +81,24 @@ def calculate_environment_mass(dataframe):
     jet_total_py = jet_py.sum()
     jet_total_pz = jet_pz.sum()
     jet_total_energy = jet_energy.sum()
-    
-    # Muonun çevresindeki eksik enerjiyi hesaplayın
+
+    # Calculate missing energy around the muon
     missing_ET = dataframe['MissingET/MissingET.MET']
     missing_ET_phi = dataframe['MissingET/MissingET.Phi']
     missing_ET_px = missing_ET.to_numpy() * np.cos(missing_ET_phi.to_numpy())
     missing_ET_py = missing_ET.to_numpy() * np.sin(missing_ET_phi.to_numpy())
-    
-    # Çevresel kütleyi hesaplayın
+
+    # Calculate environmental mass
     env_px = jet_total_px + missing_ET_px
     env_py = jet_total_py + missing_ET_py
     env_pz = jet_total_pz
     env_energy = jet_total_energy + missing_ET
-    
+
     env_mass_squared = env_energy**2 - env_px**2 - env_py**2 - env_pz**2
     env_mass = np.sqrt(np.maximum(env_mass_squared, 0))
-    
+
     env_mass -= muon_Energy
-    
+
     return env_mass
 
 branches = ['Muon/Muon.PT', 
@@ -111,7 +111,7 @@ branches = ['Muon/Muon.PT',
          'MissingET/MissingET.MET',
          'MissingET/MissingET.Phi',]
 
-branchDatas=[]
+branchDatas = []
 for i in branches:
     temp = tree.get(i).array().tolist()
     temp_list = []
@@ -131,25 +131,23 @@ df = df.fillna(0)
 df = df[df['Muon/Muon.PT'] != 0]
 
 environment_mass = calculate_environment_mass(df)
-# print(environment_mass)
-
 df['environment_mass'] = environment_mass
 
-# Bağımsız değişkenler (giriş özellikleri) ve hedef değişken (çevresel kütlesi) olarak ayırma
+# Split the independent variables (input features) and the target variable (environmental mass)
 X = df[['Muon/Muon.PT', 'Muon/Muon.Eta', 'Muon/Muon.Phi']]
 y = df['environment_mass']
 
-# Veri setini eğitim ve test setleri olarak bölmek
+# Split the dataset into training and test sets
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Modelleri tanımlama
+# Define the models
 models = [
     ("Random Forest", RandomForestRegressor()),
     ("Linear Regression", LinearRegression()),
     ("Support Vector Regression", SVR())
 ]
 
-# Modelleri eğitme ve özellik işaretçelerini hesaplama
+# Train the models and calculate feature importances
 for name, model in models:
     model.fit(X_train, y_train)
     result = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=42)
@@ -157,10 +155,9 @@ for name, model in models:
     sorted_indices = np.argsort(feature_importance)[::-1]
     sorted_features = X.columns[sorted_indices]
     sorted_importance = feature_importance[sorted_indices]
-    print(f'\n{name} Modeli Özellik İşaretçeleri:')
+    print(f'\n{name} Model Feature Importances:')
     for i, feature in enumerate(sorted_features):
         print(f'{feature}: {sorted_importance[i]}')
-
 
 modelnames = [
     'DummyRegressor()', 
